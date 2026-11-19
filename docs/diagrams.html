@@ -1,0 +1,375 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Loan Agents: Diagrams</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:1150px;margin:0 auto;padding:24px;background:#f6f7f9;color:#1d2433}
+section{background:#fff;border:1px solid #e4e7ec;border-radius:10px;padding:18px 22px;margin:0 0 22px;overflow-x:auto}
+h1{margin-bottom:4px}h2{font-size:18px;margin-top:0}p{color:#667085;font-size:14px}</style></head><body>
+<h1>Multi-Agent Loan Processing: Diagrams</h1>
+<p>Rendered with Mermaid from docs/ARCHITECTURE.md. Needs an internet connection to load the Mermaid library.</p>
+<section><h2>1. Existing process (manual)</h2><pre class="mermaid">flowchart TD
+    A[&quot;Customer submits application&lt;br/&gt;and paper or PDF documents&quot;] --&gt; B[&quot;Loan officer opens each document&lt;br/&gt;and reads it by eye&quot;]
+    B --&gt; C[&quot;Re-types data into the loan system&quot;]
+    C --&gt; D{&quot;All documents present?&quot;}
+    D -- &quot;No&quot; --&gt; D1[&quot;Phone or email the customer&lt;br/&gt;and wait days&quot;]
+    D1 --&gt; B
+    D -- &quot;Yes&quot; --&gt; E[&quot;Log in to the credit bureau portal&lt;br/&gt;and download the report&quot;]
+    E --&gt; F[&quot;Calculate instalment and debt-to-income&lt;br/&gt;in a spreadsheet&quot;]
+    F --&gt; G[&quot;Search blacklist and past applications&lt;br/&gt;by hand&quot;]
+    G --&gt; H[&quot;Apply credit policy from memory&lt;br/&gt;or a PDF manual&quot;]
+    H --&gt; I{&quot;Officer&#x27;s decision&quot;}
+    I -- &quot;Reject&quot; --&gt; N[&quot;Write and send rejection letter&quot;]
+    I -- &quot;Unsure or large&quot; --&gt; J[&quot;Forward to senior officer&lt;br/&gt;by email&quot;]
+    J --&gt; K{&quot;Senior decision&quot;}
+    K -- &quot;Reject&quot; --&gt; N
+    K -- &quot;Approve&quot; --&gt; L
+    I -- &quot;Approve&quot; --&gt; L[&quot;Key the transfer into&lt;br/&gt;the core banking portal&quot;]
+    L --&gt; M[&quot;Check the ledger later&lt;br/&gt;to confirm the amount&quot;]
+    M --&gt; O[&quot;Write and send approval letter&quot;]
+
+    classDef pain fill:#fde2e1,stroke:#a11d17,color:#000;
+    class B,C,E,F,G,L,M pain;
+</pre><p>Red boxes are the repetitive, error-prone steps (re-typing, spreadsheet maths, manual look-ups, manual payment keying). The judgement steps (`Officer&#x27;s decision`, `Senior decision`) stay with humans in the new design.</p></section>
+<section><h2>2. Proposed multi-agent architecture</h2><pre class="mermaid">flowchart LR
+    subgraph IN[&quot;Input&quot;]
+        APP[&quot;Loan application&lt;br/&gt;and documents&quot;]
+    end
+
+    ORCH{{&quot;Orchestrator&lt;br/&gt;LoanWorkflow graph runner&lt;br/&gt;state machine and persistence&quot;}}
+
+    subgraph AGENTS[&quot;Specialised agents&quot;]
+        A1[&quot;1 DocumentIntakeAgent&quot;]
+        A2[&quot;2 DataValidationAgent&quot;]
+        A3[&quot;3 CreditRiskAgent&quot;]
+        A4[&quot;4 FraudDetectionAgent&quot;]
+        A5[&quot;5 DecisionAgent&quot;]
+        A6[&quot;6 ExecutionAgent&quot;]
+        A7[&quot;7 VerificationAgent&quot;]
+        A8[&quot;8 ReportingFeedbackAgent&quot;]
+    end
+
+    HUMAN([&quot;Loan officer&lt;br/&gt;approves, rejects, or reduces amount&quot;])
+
+    APP --&gt; ORCH
+    ORCH --&gt; A1 --&gt; A2 --&gt; A3 --&gt; A4 --&gt; A5
+    A5 --&gt;|&quot;policy: human needed&quot;| HUMAN
+    HUMAN --&gt;|&quot;decision&quot;| ORCH
+    A5 --&gt;|&quot;policy: straight-through&quot;| A6
+    ORCH --&gt; A6 --&gt; A7 --&gt; A8
+    A8 -.-&gt;|&quot;repayment outcomes: proposals need human approval&quot;| A3
+    A8 -.-&gt; A5
+</pre><p>Agents never call each other. Each reads the shared case, writes only its own section, and returns control to the orchestrator.</p></section>
+<section><h2>3. Agent communication flow (one case, human-approved path)</h2><pre class="mermaid">sequenceDiagram
+    autonumber
+    actor Cust as Customer
+    participant O as Orchestrator
+    participant IN as DocumentIntakeAgent
+    participant VA as DataValidationAgent
+    participant CR as CreditRiskAgent
+    participant FR as FraudDetectionAgent
+    participant DE as DecisionAgent
+    actor LO as Loan Officer
+    participant EX as ExecutionAgent
+    participant VE as VerificationAgent
+    participant RP as ReportingFeedbackAgent
+
+    Cust-&gt;&gt;O: submit application and documents
+    O-&gt;&gt;IN: TASK parse documents
+    IN--&gt;&gt;O: RESULT structured data
+    O-&gt;&gt;VA: TASK cross-check
+    VA--&gt;&gt;O: RESULT missing documents and issues
+    alt documents missing
+        O-&gt;&gt;RP: TASK notify applicant
+        RP--&gt;&gt;Cust: request missing documents
+    else complete
+        O-&gt;&gt;CR: TASK assess risk
+        Note over CR: calls credit bureau API and runs the ML model, retries on timeout
+        CR--&gt;&gt;O: RESULT DTI and default probability
+        O-&gt;&gt;FR: TASK screen fraud
+        FR--&gt;&gt;O: RESULT level and signals
+        O-&gt;&gt;DE: TASK recommend
+        DE--&gt;&gt;O: RESULT recommendation and reasons
+        alt requires human
+            O-&gt;&gt;LO: HUMAN_REQUEST case summary
+            LO--&gt;&gt;O: HUMAN_RESPONSE approve or reject
+        end
+        opt approved
+            O-&gt;&gt;EX: TASK disburse
+            Note over EX: idempotent bank API call
+            EX--&gt;&gt;O: RESULT transaction id
+            O-&gt;&gt;VE: TASK verify
+            VE--&gt;&gt;O: RESULT ledger matches
+        end
+        O-&gt;&gt;RP: TASK close case
+        RP--&gt;&gt;Cust: decision notice
+    end
+</pre><p>Every TASK, RESULT, HUMAN_REQUEST and HUMAN_RESPONSE is stored as an `AgentMessage` and shown in the dashboard under &quot;Agent conversation&quot;.</p></section>
+<section><h2>4. Data flow diagram</h2><pre class="mermaid">flowchart LR
+    CUST([&quot;Customer&quot;])
+    OFFICER([&quot;Loan officer&quot;])
+    OPS([&quot;Operations team&quot;])
+    BUREAU[[&quot;Credit bureau API&quot;]]
+    BANK[[&quot;Core banking API&quot;]]
+
+    P1[&quot;P1 Parse documents&quot;]
+    P2[&quot;P2 Validate data&quot;]
+    P3[&quot;P3 Assess risk&quot;]
+    P4[&quot;P4 Screen fraud&quot;]
+    P5[&quot;P5 Decide&quot;]
+    P6[&quot;P6 Disburse&quot;]
+    P7[&quot;P7 Verify&quot;]
+    P8[&quot;P8 Report and learn&quot;]
+
+    D1[(&quot;Case store&quot;)]
+    D2[(&quot;Audit log and messages&quot;)]
+    D3[(&quot;Blacklist&quot;)]
+    D4[(&quot;Risk model weights&quot;)]
+    D5[(&quot;Feedback outcomes&quot;)]
+
+    CUST --&gt;|&quot;application, documents&quot;| P1
+    P1 --&gt;|&quot;extracted fields&quot;| D1
+    D1 --&gt; P2
+    P2 --&gt;|&quot;validation report&quot;| D1
+    D1 --&gt; P3
+    BUREAU --&gt;|&quot;credit report&quot;| P3
+    D4 --&gt;|&quot;weights&quot;| P3
+    P3 --&gt;|&quot;risk assessment&quot;| D1
+    D1 --&gt; P4
+    D3 --&gt;|&quot;matches&quot;| P4
+    D1 --&gt;|&quot;past applications&quot;| P4
+    P4 --&gt;|&quot;fraud report&quot;| D1
+    D1 --&gt; P5
+    P5 --&gt;|&quot;recommendation&quot;| D1
+    P5 --&gt;|&quot;case summary&quot;| OFFICER
+    OFFICER --&gt;|&quot;approval&quot;| D1
+    D1 --&gt;|&quot;authorised amount&quot;| P6
+    P6 --&gt;|&quot;payment instruction&quot;| BANK
+    BANK --&gt;|&quot;receipt&quot;| P6
+    P6 --&gt; D1
+    BANK --&gt;|&quot;ledger entry&quot;| P7
+    D1 --&gt; P7
+    P7 --&gt;|&quot;mismatch alert&quot;| OPS
+    P7 --&gt; D1
+    D1 --&gt; P8
+    P8 --&gt;|&quot;decision notice&quot;| CUST
+    OFFICER --&gt;|&quot;repayment outcome&quot;| P8
+    P8 --&gt; D5
+    D5 --&gt;|&quot;retrain proposal&quot;| D4
+    P1 -.-&gt; D2
+    P3 -.-&gt; D2
+    P5 -.-&gt; D2
+    P6 -.-&gt; D2
+</pre><p></p></section>
+<section><h2>5. State diagram</h2><pre class="mermaid">stateDiagram-v2
+    [*] --&gt; submitted
+    submitted --&gt; documents_parsed
+    documents_parsed --&gt; validated
+    documents_parsed --&gt; needs_info : missing or unreadable documents
+    validated --&gt; risk_assessed
+    risk_assessed --&gt; fraud_screened
+    fraud_screened --&gt; recommended
+    recommended --&gt; awaiting_approval : human required
+    recommended --&gt; approved : straight-through
+    recommended --&gt; rejected : policy rejection
+    awaiting_approval --&gt; approved : officer approves
+    awaiting_approval --&gt; rejected : officer rejects
+    approved --&gt; disbursed
+    disbursed --&gt; verified : ledger matches
+    disbursed --&gt; reconciliation_required : ledger mismatch
+    verified --&gt; completed
+    rejected --&gt; completed
+    needs_info --&gt; [*]
+    reconciliation_required --&gt; [*]
+    completed --&gt; [*]
+
+    submitted --&gt; failed
+    documents_parsed --&gt; failed
+    validated --&gt; failed
+    risk_assessed --&gt; failed
+    fraud_screened --&gt; failed
+    recommended --&gt; failed
+    awaiting_approval --&gt; failed
+    approved --&gt; failed
+    disbursed --&gt; failed
+    verified --&gt; failed
+    rejected --&gt; failed
+    needs_info --&gt; failed
+    reconciliation_required --&gt; failed
+    failed --&gt; [*] : retry resumes at the failed node
+</pre><p>Two rules the code enforces: no state can be skipped (`IllegalTransition`), and money only moves from `approved`, which is reachable only through a human review or a policy-approved straight-through case. Any non-final state can move to `failed` (for example if the closing report step itself breaks), and a retry resumes at the node that failed.</p></section>
+<section><h2>6. System architecture (layers)</h2><pre class="mermaid">flowchart TB
+    subgraph UI[&quot;Interface layer&quot;]
+        DASH[&quot;Flask dashboard&lt;br/&gt;officer review, retry, outcomes&quot;]
+        CLI[&quot;CLI: demo, dashboard, feedback-demo&quot;]
+        API[&quot;REST API (extension point)&quot;]
+    end
+
+    subgraph APPL[&quot;Application layer&quot;]
+        FACADE[&quot;LoanProcessingSystem facade&quot;]
+        WF[&quot;LoanWorkflow&lt;br/&gt;WorkflowGraph, routing, retry, pause and resume&quot;]
+        STATE[&quot;WorkflowContext&lt;br/&gt;state machine&quot;]
+        BUS[&quot;MessageBus and AuditLogger&quot;]
+    end
+
+    subgraph AG[&quot;Agent layer (all extend BaseAgent)&quot;]
+        AGS[&quot;Intake, Validation, CreditRisk, FraudDetection,&lt;br/&gt;Decision, Execution, Verification, ReportingFeedback&quot;]
+    end
+
+    subgraph SVC[&quot;Service layer (abstract interfaces)&quot;]
+        S1[&quot;DocumentParser&quot;]
+        S2[&quot;CreditBureauAPI&quot;]
+        S3[&quot;CoreBankingAPI&quot;]
+        S4[&quot;FraudDatabase&quot;]
+        S5[&quot;ExplanationGenerator&quot;]
+        S6[&quot;Notifier&quot;]
+        ML[&quot;LogisticRiskModel&lt;br/&gt;and ModelRegistry&quot;]
+    end
+
+    subgraph INFRA[&quot;Infrastructure (swappable implementations)&quot;]
+        I1[&quot;KeyValueDocumentParser&lt;br/&gt;(OCR or vision LLM in production)&quot;]
+        I2[&quot;MockCreditBureau&lt;br/&gt;(real bureau REST API)&quot;]
+        I3[&quot;MockCoreBanking&lt;br/&gt;(real banking gateway)&quot;]
+        I4[(&quot;SQLite Repository&lt;br/&gt;PostgreSQL in production&quot;)]
+        I5[&quot;Template explanation&lt;br/&gt;or LangChain LLM&quot;]
+        I6[&quot;Console or in-memory notifier&lt;br/&gt;(email or SMS)&quot;]
+    end
+
+    UI --&gt; FACADE --&gt; WF
+    WF --&gt; STATE
+    WF --&gt; BUS
+    WF --&gt; AGS
+    AGS --&gt; S1 &amp; S2 &amp; S3 &amp; S4 &amp; S5 &amp; S6 &amp; ML
+    S1 -.-&gt; I1
+    S2 -.-&gt; I2
+    S3 -.-&gt; I3
+    S4 -.-&gt; I4
+    S5 -.-&gt; I5
+    S6 -.-&gt; I6
+    BUS --&gt; I4
+    STATE --&gt; I4
+</pre><p></p></section>
+<section><h2>7. Human-in-the-loop workflow</h2><pre class="mermaid">flowchart TD
+    R[&quot;DecisionAgent recommendation&quot;] --&gt; Q1{&quot;Recommendation&quot;}
+    Q1 -- &quot;REJECT&quot; --&gt; RJ[&quot;Auto-reject: DTI over limit,&lt;br/&gt;PD over threshold, or blacklisted.&lt;br/&gt;Applicant notice has safe reasons only&quot;]
+    Q1 -- &quot;ESCALATE&quot; --&gt; H
+    Q1 -- &quot;APPROVE&quot; --&gt; Q2{&quot;Straight-through eligible?&lt;br/&gt;amount at or under limit,&lt;br/&gt;risk band low,&lt;br/&gt;no warnings or fraud signals&quot;}
+    Q2 -- &quot;Yes&quot; --&gt; EX
+    Q2 -- &quot;No&quot; --&gt; H
+
+    H[&quot;PAUSE: case saved as awaiting_approval.&lt;br/&gt;Officer notified with summary,&lt;br/&gt;reasons, risk and fraud evidence&quot;] --&gt; HD{&quot;Loan officer decides&lt;br/&gt;name recorded in audit&quot;}
+    HD -- &quot;Reject&quot; --&gt; RJ
+    HD -- &quot;Approve, optionally reduce amount&lt;br/&gt;(never raise)&quot; --&gt; EX[&quot;ExecutionAgent disburses&lt;br/&gt;idempotent bank call&quot;]
+    EX --&gt; V[&quot;VerificationAgent re-reads the bank ledger&quot;]
+    V --&gt; Q3{&quot;Ledger matches&lt;br/&gt;authorisation?&quot;}
+    Q3 -- &quot;Yes&quot; --&gt; DONE[&quot;Completed: applicant notified&quot;]
+    Q3 -- &quot;No&quot; --&gt; OPS[&quot;Operations alerted:&lt;br/&gt;human reconciliation&quot;]
+
+    DONE --&gt; FB[&quot;Months later: repayment outcome&lt;br/&gt;recorded by a human or system&quot;]
+    FB --&gt; LEARN[&quot;Agent proposes retrained model&lt;br/&gt;and new threshold&quot;]
+    LEARN --&gt; G{&quot;Risk manager&lt;br/&gt;approves?&quot;}
+    G -- &quot;Yes&quot; --&gt; LIVE[&quot;Promoted live,&lt;br/&gt;audit entry written&quot;]
+    G -- &quot;No&quot; --&gt; KEEP[&quot;Current model and policy unchanged&quot;]
+</pre><p>Humans appear at four points: the approval gate, reconciliation of ledger mismatches, retrying failed cases, and approving any model or policy change.</p></section>
+<section><h2>8. Class diagram (OOP design)</h2><pre class="mermaid">classDiagram
+    class BaseAgent {
+        &lt;&lt;abstract&gt;&gt;
+        +name
+        +execute(ctx)
+        +run(ctx)
+        +summarize(ctx)
+    }
+    BaseAgent &lt;|-- DocumentIntakeAgent
+    BaseAgent &lt;|-- DataValidationAgent
+    BaseAgent &lt;|-- CreditRiskAgent
+    BaseAgent &lt;|-- FraudDetectionAgent
+    BaseAgent &lt;|-- DecisionAgent
+    BaseAgent &lt;|-- ExecutionAgent
+    BaseAgent &lt;|-- VerificationAgent
+    BaseAgent &lt;|-- ReportingFeedbackAgent
+
+    class RetryPolicy {
+        +max_attempts
+        +delay_for(attempt)
+    }
+    BaseAgent o-- RetryPolicy
+
+    class CreditBureauAPI {
+        &lt;&lt;interface&gt;&gt;
+        +get_report(id)
+    }
+    class CoreBankingAPI {
+        &lt;&lt;interface&gt;&gt;
+        +disburse()
+        +get_transaction()
+    }
+    class DocumentParser {
+        &lt;&lt;interface&gt;&gt;
+        +parse(doc)
+    }
+    class FraudDatabase {
+        &lt;&lt;interface&gt;&gt;
+    }
+    class ExplanationGenerator {
+        &lt;&lt;interface&gt;&gt;
+        +generate(ctx)
+    }
+    class Notifier {
+        &lt;&lt;interface&gt;&gt;
+        +send(n)
+    }
+    CreditBureauAPI &lt;|.. MockCreditBureau
+    CoreBankingAPI &lt;|.. MockCoreBanking
+    DocumentParser &lt;|.. KeyValueDocumentParser
+    FraudDatabase &lt;|.. RepositoryFraudDatabase
+    ExplanationGenerator &lt;|.. TemplateExplanationGenerator
+    ExplanationGenerator &lt;|.. LangChainExplanationGenerator
+    Notifier &lt;|.. ConsoleNotifier
+    Notifier &lt;|.. InMemoryNotifier
+
+    CreditRiskAgent --&gt; CreditBureauAPI
+    CreditRiskAgent --&gt; ModelRegistry
+    ExecutionAgent --&gt; CoreBankingAPI
+    VerificationAgent --&gt; CoreBankingAPI
+    DocumentIntakeAgent --&gt; DocumentParser
+    FraudDetectionAgent --&gt; FraudDatabase
+    DecisionAgent --&gt; ExplanationGenerator
+    ReportingFeedbackAgent --&gt; Notifier
+
+    class WorkflowContext {
+        +status
+        +transition(new)
+        +fail(node, error)
+        +recover()
+        +authorized_for_execution
+    }
+    class LoanWorkflow {
+        +start(app)
+        +apply_human_review()
+        +retry_failed()
+    }
+    class WorkflowGraph {
+        +add_node()
+        +add_edge()
+        +add_conditional_edges()
+    }
+    class LoanProcessingSystem {
+        +submit()
+        +review()
+        +retry()
+        +record_outcome()
+    }
+    class ModelRegistry {
+        +current
+        +promote()
+    }
+    class LogisticRiskModel {
+        +fit()
+        +predict_proba()
+    }
+    LoanProcessingSystem --&gt; LoanWorkflow
+    LoanWorkflow --&gt; WorkflowGraph
+    LoanWorkflow --&gt; WorkflowContext
+    ModelRegistry --&gt; LogisticRiskModel
+</pre><p></p></section>
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs";
+mermaid.initialize({startOnLoad:true, securityLevel:"loose"});
+</script></body></html>

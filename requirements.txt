@@ -1,0 +1,5 @@
+# Core system needs only the Python standard library (3.10+).
+flask>=3.0          # officer dashboard
+# Optional extras
+# langgraph>=0.2            # to use loan_system/langgraph_adapter.py
+# langchain-anthropic>=0.3  # to use LangChainExplanationGenerator
